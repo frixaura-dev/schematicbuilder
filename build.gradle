@@ -1,0 +1,27 @@
+plugins {
+    // For obfuscated MC (<= 1.21.11) the legacy id still works. Newer Loom also offers 'net.fabricmc.fabric-loom-remap'.
+    id 'fabric-loom' version "${loom_version}"
+}
+
+base { archivesName = 'schembuilder' }
+version = project.mod_version
+group = 'com.example'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+tasks.withType(JavaCompile).configureEach { options.release = 21 }
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    // No Litematica jar needed at compile time: it is accessed via reflection (see LitematicaBridge).
+}
+
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") { expand "version": project.version }
+}
