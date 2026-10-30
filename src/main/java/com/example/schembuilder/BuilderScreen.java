@@ -164,7 +164,7 @@ public class BuilderScreen extends Screen {
 
         // panels first, then widgets on top, then dynamic content
         ctx.fill(px, py, px + pw, py + ph, BG);
-        ctx.drawBorder(px, py, pw, ph, BORDER);
+        Gfx.border(ctx, px, py, pw, ph, BORDER);
         drawHeader(ctx);
         card(ctx, leftX, py + HEADER_H + 8 + 52, leftW, py + ph - 30 - (py + HEADER_H + 8 + 52));
         card(ctx, cx - 2, cy - 2, cw + 4, ch + 4);
@@ -182,7 +182,7 @@ public class BuilderScreen extends Screen {
 
     private void card(DrawContext ctx, int x, int y, int w, int h) {
         ctx.fill(x, y, x + w, y + h, CARD);
-        ctx.drawBorder(x, y, w, h, BORDER);
+        Gfx.border(ctx, x, y, w, h, BORDER);
     }
 
     private void drawHeader(DrawContext ctx) {
@@ -219,7 +219,7 @@ public class BuilderScreen extends Screen {
         ctx.drawTextWithShadow(textRenderer, "PROGRESS", x, y, MUTED); y += 11;
         ctx.fill(x, y, x + w, y + 8, TRACK);
         ctx.fill(x, y, x + (int) (w * pct), y + 8, ACCENT);
-        ctx.drawBorder(x, y, w, 8, BORDER);
+        Gfx.border(ctx, x, y, w, 8, BORDER);
         y += 12;
         ctx.drawTextWithShadow(textRenderer, String.format(Locale.ROOT, "%,d / %,d  (%.1f%%)", built, total, pct * 100), x, y, TEXT);
         y += 16;

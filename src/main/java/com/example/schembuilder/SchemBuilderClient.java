@@ -61,7 +61,7 @@ public class SchemBuilderClient implements ClientModInitializer {
 
             int x = 6, y = 6, w = 176, h = 50;
             ctx.fill(x, y, x + w, y + h, 0xB0101418);
-            ctx.drawBorder(x, y, w, h, 0xFF39434E);
+            Gfx.border(ctx, x, y, w, h, 0xFF39434E);
 
             int accent = switch (BuildEngine.mode) {
                 case "Walking", "Arriving" -> 0xFF5AB0FF;
