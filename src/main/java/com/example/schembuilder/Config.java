@@ -14,7 +14,10 @@ public class Config {
     public int maxDelay = 8;          // ticks between placements (max)
     public int reachTenths = 45;      // reach in tenths of a block
     public int turnSpeed = 18;        // max degrees per tick when turning
-    public boolean layerByLayer = true;
+    /** 0 = layer at your feet, 1 = the floor layer you stand on, 2 = whole build bottom-up, 3 = whole build nearest-first */
+    public int layerMode = 0;
+    public int humanLevel = 60;           // 0 = mechanical, 100 = very varied/relaxed
+    public boolean takeBreaks = true;     // occasional short breaks while building
     public boolean creativeFill = true;
     public boolean lineOfSight = true;
     public boolean autoWalk = true;       // walk around the schematic by itself

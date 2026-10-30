@@ -46,15 +46,19 @@ public final class Navigator {
     private static final Map<Long, Long> blacklist = new HashMap<>();
     private static long tickNo = 0;
     private static boolean movingByUs = false, sneakingByUs = false;
-    private static int remainingCache = -1;
-    private static long remainingAt = -9999;
+    private static final int[] remCache = {-1, -1};          // [0] whole schematic, [1] one layer
+    private static final Integer[] remKey = {null, null};
+    private static final long[] remAt = {-9999, -9999};
     private static String missingItem = null;
+    // per-step natural variation along the current path
+    private static double[] offX = new double[0], offZ = new double[0], thr = new double[0];
+    private static int hesitate = 0;
 
     // ================================================================ lifecycle
     public static void reset() {
         path = null; idx = 0; searchCooldown = 0; settle = 0; arrivedFails = 0;
         stuckStrikes = 0; stuckTimer = 0; goals = List.of(); blacklist.clear();
-        remainingCache = -1; missingItem = null;
+        remCache[0] = -1; remCache[1] = -1; missingItem = null; hesitate = 0;
     }
 
     static void beginTick() { tickNo++; }
@@ -150,14 +154,17 @@ public final class Navigator {
                 searchCooldown = 40;
                 return;
             }
-            int remaining = remainingPlaceable(mc);
-            if (remaining == 0) {
-                ClientPlayerEntity p = mc.player;
-                if (p != null) p.sendMessage(Text.literal("§a[Builder] Build complete! Placed " + BuildEngine.placedThisSession + " blocks."), false);
-                BuildEngine.stop("Build complete!");
+            Integer ly = Layer.lockedY();
+            int here = remainingPlaceable(mc, ly);
+            if (ly != null && here == 0) {
+                if (remainingPlaceable(mc, null) == 0) { finish(mc); return; }
+                BuildEngine.status = "Layer " + ly + " is finished - move up to the next layer and it carries on by itself";
+                searchCooldown = 20;
                 return;
             }
-            BuildEngine.status = remaining + " block(s) left but none can be built from here (no support yet, or too far - raise the search radius)";
+            if (ly == null && here == 0) { finish(mc); return; }
+            BuildEngine.status = here + " block(s) left" + (ly != null ? " on layer " + ly : "")
+                    + " but none can be built from here (no support yet, or too far - raise the search radius)";
             searchCooldown = 40;
             return;
         }
@@ -174,6 +181,18 @@ public final class Navigator {
         }
         path = found;
         idx = 0;
+        // each step gets its own tiny sideways offset and "close enough" distance, so we don't walk a perfect line
+        int n = found.size();
+        offX = new double[n]; offZ = new double[n]; thr = new double[n];
+        BlockPos.Mutable tmp = new BlockPos.Mutable();
+        for (int i = 0; i < n; i++) {
+            BlockPos s = found.get(i);
+            boolean edge = nearDrop(mc.world, tmp, s.getX(), s.getY(), s.getZ());
+            double a = edge ? 0 : 0.44 * Human.level();
+            offX[i] = (Human.R.nextDouble() - 0.5) * a;
+            offZ[i] = (Human.R.nextDouble() - 0.5) * a;
+            thr[i] = 0.36 + Human.R.nextDouble() * 0.2;
+        }
         stuckStrikes = 0; stuckTimer = 0;
         ClientPlayerEntity p = mc.player;
         lastX = p.getX(); lastZ = p.getZ();
@@ -196,6 +215,11 @@ public final class Navigator {
             int x0 = Math.max(reg.minX(), px - R), x1 = Math.min(reg.maxX(), px + R);
             int y0 = Math.max(reg.minY(), py - R), y1 = Math.min(reg.maxY(), py + R);
             int z0 = Math.max(reg.minZ(), pz - R), z1 = Math.min(reg.maxZ(), pz + R);
+            Integer lock = Layer.lockedY();
+            if (lock != null) {                                  // only the chosen layer
+                if (lock < reg.minY() || lock > reg.maxY()) continue;
+                y0 = lock; y1 = lock;
+            }
             for (int x = x0; x <= x1; x++)
                 for (int y = y0; y <= y1; y++)
                     for (int z = z0; z <= z1; z++) {
@@ -211,7 +235,7 @@ public final class Navigator {
                         }
                         if (!BuildEngine.hasSupport(w, m)) continue;
                         double dx = x - px, dy = y - py, dz = z - pz;
-                        double score = (Config.I.layerByLayer ? y * 100.0 : 0) + Math.sqrt(dx * dx + dy * dy + dz * dz);
+                        double score = (Layer.bottomUp() ? y * 100.0 : 0) + Math.sqrt(dx * dx + dy * dy + dz * dz);
                         out.add(new Cand(m.toImmutable(), want, score));
                     }
         }
@@ -219,22 +243,36 @@ public final class Navigator {
         return out.size() > GOALS ? new ArrayList<>(out.subList(0, GOALS)) : out;
     }
 
-    /** How many placeable blocks remain anywhere in the schematic (throttled). */
-    private static int remainingPlaceable(MinecraftClient mc) {
-        if (remainingCache >= 0 && tickNo - remainingAt < 100) return remainingCache;
+    private static void finish(MinecraftClient mc) {
+        ClientPlayerEntity p = mc.player;
+        if (p != null) p.sendMessage(Text.literal("§a[Builder] Build complete! Placed " + BuildEngine.placedThisSession + " blocks."), false);
+        BuildEngine.stop("Build complete!");
+    }
+
+    /** How many placeable blocks remain on layer y (or in the whole schematic when y is null). Throttled. */
+    private static int remainingPlaceable(MinecraftClient mc, Integer y) {
+        int slot = y == null ? 0 : 1;
+        if (remCache[slot] >= 0 && Objects.equals(remKey[slot], y) && tickNo - remAt[slot] < 100) return remCache[slot];
         ClientWorld w = mc.world;
         int count = 0;
         BlockPos.Mutable m = new BlockPos.Mutable();
-        for (LitematicaBridge.Region reg : LitematicaBridge.regions())
+        for (LitematicaBridge.Region reg : LitematicaBridge.regions()) {
+            int y0 = reg.minY(), y1 = reg.maxY();
+            if (y != null) {
+                if (y < y0 || y > y1) continue;
+                y0 = y; y1 = y;
+            }
             for (int x = reg.minX(); x <= reg.maxX(); x++)
-                for (int y = reg.minY(); y <= reg.maxY(); y++)
+                for (int yy = y0; yy <= y1; yy++)
                     for (int z = reg.minZ(); z <= reg.maxZ(); z++) {
-                        m.set(x, y, z);
+                        m.set(x, yy, z);
                         if (!w.getBlockState(m).isReplaceable()) continue;
                         if (BuildEngine.isCandidate(w, m, LitematicaBridge.wanted(m))) count++;
                     }
-        remainingCache = count;
-        remainingAt = tickNo;
+        }
+        remCache[slot] = count;
+        remKey[slot] = y;
+        remAt[slot] = tickNo;
         return count;
     }
 
@@ -260,17 +298,17 @@ public final class Navigator {
 
         BlockPos next = path.get(idx);
         double px = p.getX(), py = p.getY(), pz = p.getZ();
-        double tx = next.getX() + 0.5, tz = next.getZ() + 0.5;
+        double tx = next.getX() + 0.5 + stepOff(offX, idx), tz = next.getZ() + 0.5 + stepOff(offZ, idx);
         double dx = tx - px, dz = tz - pz;
         double hd = Math.sqrt(dx * dx + dz * dz);
 
         // reached this node?
-        if (hd < 0.42 && Math.abs(py - next.getY()) < 1.3) {
+        if (hd < stepThr(idx) && Math.abs(py - next.getY()) < 1.3) {
             idx++;
             stuckTimer = 0; stuckStrikes = 0; lastX = px; lastZ = pz;
             if (idx >= path.size()) { releaseMove(mc); settle = 8; return; }
             next = path.get(idx);
-            tx = next.getX() + 0.5; tz = next.getZ() + 0.5;
+            tx = next.getX() + 0.5 + stepOff(offX, idx); tz = next.getZ() + 0.5 + stepOff(offZ, idx);
             dx = tx - px; dz = tz - pz; hd = Math.sqrt(dx * dx + dz * dz);
         }
 
@@ -281,14 +319,18 @@ public final class Navigator {
         }
 
         // turn toward the next node (gentle, human-ish)
-        float ty = (float) (MathHelper.atan2(dz, dx) * 180.0 / Math.PI) - 90.0f;
+        float ty = (float) (MathHelper.atan2(dz, dx) * 180.0 / Math.PI) - 90.0f + (float) Human.wander(2.5);
         float dyaw = MathHelper.wrapDegrees(ty - p.getYaw());
         float maxTurn = Config.I.turnSpeed * 1.3f;
         p.setYaw(p.getYaw() + MathHelper.clamp(dyaw * 0.4f, -maxTurn, maxTurn));
-        float dp = 12.0f - p.getPitch();
+        float dp = (12.0f + (float) Human.wander(4.0)) - p.getPitch();
         p.setPitch(p.getPitch() + MathHelper.clamp(dp * 0.2f, -6f, 6f));
 
-        boolean forward = Math.abs(dyaw) < 35f;
+        // now and then a person eases off for a moment
+        if (hesitate > 0) hesitate--;
+        else if (Human.level() > 0 && Human.R.nextDouble() < 0.004 * Human.level()) hesitate = 4 + Human.R.nextInt(12);
+
+        boolean forward = Math.abs(dyaw) < 35f && hesitate == 0;
         boolean stepUp = next.getY() > p.getBlockY();
         boolean jump = p.isOnGround() && (stepUp || p.horizontalCollision) && hd < 1.6;
 
@@ -307,6 +349,9 @@ public final class Navigator {
             }
         }
     }
+
+    private static double stepOff(double[] a, int i) { return i < a.length ? a[i] : 0; }
+    private static double stepThr(int i) { return i < thr.length ? thr[i] : 0.42; }
 
     private static void replan(MinecraftClient mc) {
         releaseMove(mc);
@@ -375,9 +420,11 @@ public final class Navigator {
 
     /** Could we build at least one of the goals standing here? */
     private static boolean isGoal(MinecraftClient mc, BlockPos.Mutable m, int x, int y, int z, List<Cand> cands, double reach) {
-        if (wantsBlockAt(m, x, y, z) || wantsBlockAt(m, x, y + 1, z)) return false;
         Vec3d eye = new Vec3d(x + 0.5, y + EYE, z + 0.5);
         for (Cand c : cands) {
+            BlockPos cp = c.pos();
+            // standing in the very cell we want to fill would block it (standing in other still-empty cells is fine)
+            if (cp.getX() == x && cp.getZ() == z && (cp.getY() == y || cp.getY() == y + 1)) continue;
             if (eye.squaredDistanceTo(Vec3d.ofCenter(c.pos())) > (reach + 0.9) * (reach + 0.9)) continue;
             if (BuildEngine.planFor(mc, c.pos(), c.want(), eye, reach) != null) return true;
         }
@@ -390,6 +437,7 @@ public final class Navigator {
         BlockPos.Mutable m = new BlockPos.Mutable();
         double reach = Math.max(2.0, Config.I.reach() - 0.5);   // keep a safety margin for where we actually end up standing
         int maxDrop = Config.I.allowDrops ? 3 : 1;
+        boolean locked = Layer.lockedY() != null;
         int sx = p.getBlockX(), sy = p.getBlockY(), sz = p.getBlockZ();
         int limit = Config.I.searchRadius + 12;
 
@@ -424,7 +472,9 @@ public final class Navigator {
                     if (!passable(w, m, cur.x, cur.y, cur.z + d[1]) || !passable(w, m, cur.x, cur.y + 1, cur.z + d[1])) continue;
                 }
 
-                for (int dy = 1; dy >= -maxDrop; dy--) {
+                // with a layer chosen we stay on this level (no stepping up/down off the layer)
+                int dyHi = locked ? 0 : 1, dyLo = locked ? 0 : -maxDrop;
+                for (int dy = dyHi; dy >= dyLo; dy--) {
                     if (diag && (dy > 0 || dy < -1)) continue;
                     int ny = cur.y + dy;
                     if (!standable(w, m, nx, ny, nz)) continue;
@@ -439,7 +489,7 @@ public final class Navigator {
                     if (dy > 0) cost += 0.6;
                     if (dy < 0) cost += 0.3 * -dy;
                     if (nearDrop(w, m, nx, ny, nz)) cost += 1.5;                                // prefer routes away from edges
-                    if (wantsBlockAt(m, nx, ny, nz) || wantsBlockAt(m, nx, ny + 1, nz)) cost += 5; // don't stand where blocks go
+                    if (wantsBlockAt(m, nx, ny, nz)) cost += 0.5;                               // slight preference for already-built space
 
                     long key = BlockPos.asLong(nx, ny, nz);
                     N old = best.get(key);

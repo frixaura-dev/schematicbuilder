@@ -65,7 +65,7 @@ public class SchemBuilderClient implements ClientModInitializer {
 
             int accent = switch (BuildEngine.mode) {
                 case "Walking", "Arriving" -> 0xFF5AB0FF;
-                case "Waiting" -> 0xFFFFD84D;
+                case "Waiting", "Pause", "Break" -> 0xFFFFD84D;
                 case "Idle" -> 0xFFFF6B6B;
                 default -> 0xFF55E07A;
             };

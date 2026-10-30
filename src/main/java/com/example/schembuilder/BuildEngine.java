@@ -48,6 +48,9 @@ public final class BuildEngine {
 
     private static Plan plan;
     private static int cooldown = 0;
+    // per-target aiming style (changes every block, like a hand does)
+    private static float aimGain = 0.4f, ovYaw = 0, ovPitch = 0;
+    private static int aimFail = 0;
     /** How many times we tried to place at a position (gives up after a few so a server-rejected spot can't loop forever). */
     private static final Map<Long, Integer> attempts = new HashMap<>();
 
@@ -56,6 +59,7 @@ public final class BuildEngine {
         running = true; plan = null; cooldown = 0; status = "Building..."; mode = "Starting";
         placedThisSession = 0; accumMs = 0; startMs = System.currentTimeMillis();
         attempts.clear();
+        Human.reset();
         Navigator.reset();
     }
 
@@ -80,10 +84,21 @@ public final class BuildEngine {
         if (mc.currentScreen != null) { Navigator.releaseAll(mc); return; } // paused while a menu is open
 
         Navigator.beginTick();
+        Layer.update(mc);
         if (LitematicaBridge.regions().isEmpty()) {
             Navigator.releaseAll(mc);
             mode = "Idle";
             status = LitematicaBridge.lastError != null ? LitematicaBridge.lastError : "No schematic placement found (load one in Litematica)";
+            return;
+        }
+
+        // a person stops for a moment now and then
+        if (Human.idling()) {
+            Navigator.releaseAll(mc);
+            Navigator.holdSneak(mc, Config.I.edgeSneak && Navigator.isNearEdge(mc));
+            mode = Human.idleMode;
+            status = Human.idleText;
+            Human.drift(p);
             return;
         }
 
@@ -98,7 +113,8 @@ public final class BuildEngine {
             plan = findPlan(mc);
             if (plan == null) { Navigator.walkTick(mc); return; } // nothing in reach -> walk somewhere useful
             Navigator.onPlanFound(mc);
-            if (cooldown < 2) cooldown = 2 + RNG.nextInt(3);      // "reaction time" on a new spot
+            newAimStyle();
+            if (cooldown < 2) cooldown = 2 + (int) (RNG.nextInt(4) * Math.max(0.5, Human.level() * 1.5)); // "reaction time" on a new spot
         }
 
         mode = "Placing";
@@ -107,23 +123,59 @@ public final class BuildEngine {
 
         boolean aligned = turnToward(p, plan.aim);
         if (!aligned) { status = "Aiming..."; return; }
-        if (cooldown > 0) { cooldown--; status = "Building..."; return; }
+        if (cooldown > 0) { cooldown--; Human.drift(p); status = "Building..."; return; }
 
         Item item = plan.want.getBlock().asItem();
+        boolean alreadyHeld = p.getInventory().getSelectedStack().isOf(item);
         if (!ensureItem(mc, item)) { status = "Missing: " + item.getName().getString(); plan = null; return; }
+        if (!alreadyHeld) {                                     // switching blocks takes a moment
+            cooldown = Math.max(cooldown, 3 + RNG.nextInt(4));
+            status = "Switching block...";
+            return;
+        }
 
+        // Click exactly where the crosshair is pointing, like a real player (not at an invented point).
         BlockHitResult hit = new BlockHitResult(plan.aim, plan.side, plan.neighbor, false);
+        if (Config.I.lineOfSight) {
+            Vec3d eye = p.getEyePos();
+            Vec3d look = Vec3d.fromPolar(p.getPitch(), p.getYaw());
+            BlockHitResult ray = w.raycast(new RaycastContext(eye, eye.add(look.multiply(Config.I.reach() + 0.5)),
+                    RaycastContext.ShapeType.OUTLINE, RaycastContext.FluidHandling.NONE, p));
+            boolean onTarget = ray.getType() == HitResult.Type.BLOCK
+                    && ray.getBlockPos().equals(plan.neighbor) && ray.getSide() == plan.side;
+            if (!onTarget) {
+                if (++aimFail > 14) { plan = null; aimFail = 0; }   // try a fresh aim point
+                status = "Aiming...";
+                return;
+            }
+            hit = ray;
+        }
+
         ActionResult r = mc.interactionManager.interactBlock(p, Hand.MAIN_HAND, hit);
         attempts.merge(plan.target.asLong(), 1, Integer::sum);
         if (r.isAccepted()) {
             p.swingHand(Hand.MAIN_HAND);
             placedThisSession++;
+            Human.afterPlace();
         }
         plan = null;
         int lo = Math.min(Config.I.minDelay, Config.I.maxDelay);
         int hi = Math.max(Config.I.minDelay, Config.I.maxDelay);
-        cooldown = lo + RNG.nextInt(hi - lo + 1);
+        cooldown = Human.delay(lo, hi);
         status = "Building...";
+    }
+
+    /** Pick how this particular block will be aimed at: speed, and sometimes a small overshoot that settles. */
+    private static void newAimStyle() {
+        double lv = Human.level();
+        aimGain = 0.30f + RNG.nextFloat() * 0.22f;
+        aimFail = 0;
+        if (RNG.nextDouble() < 0.35 * lv) {
+            ovYaw = (RNG.nextBoolean() ? 1 : -1) * (1.5f + RNG.nextFloat() * 4f);
+            ovPitch = (RNG.nextFloat() - 0.5f) * 3f;
+        } else {
+            ovYaw = 0; ovPitch = 0;
+        }
     }
 
     // --------------------------------------------------------------- planning
@@ -143,6 +195,11 @@ public final class BuildEngine {
             int x0 = Math.max(reg.minX(), pp.getX() - r), x1 = Math.min(reg.maxX(), pp.getX() + r);
             int y0 = Math.max(reg.minY(), pp.getY() - r), y1 = Math.min(reg.maxY(), pp.getY() + r);
             int z0 = Math.max(reg.minZ(), pp.getZ() - r), z1 = Math.min(reg.maxZ(), pp.getZ() + r);
+            Integer lock = Layer.lockedY();
+            if (lock != null) {                                  // only the chosen layer
+                if (lock < y0 || lock > y1) continue;
+                y0 = lock; y1 = lock;
+            }
             BlockPos.Mutable m = new BlockPos.Mutable();
 
             for (int x = x0; x <= x1; x++)
@@ -159,7 +216,7 @@ public final class BuildEngine {
 
                         Plan pl = planFor(mc, pos, want, eye, reach);
                         if (pl == null) continue;
-                        double score = (Config.I.layerByLayer ? y * 10000.0 : 0) + eye.squaredDistanceTo(pl.aim);
+                        double score = (Layer.bottomUp() ? y * 10000.0 : 0) + eye.squaredDistanceTo(pl.aim);
                         if (score < bestScore) { bestScore = score; best = pl; }
                     }
         }
@@ -250,15 +307,20 @@ public final class BuildEngine {
         Vec3d d = aim.subtract(p.getEyePos());
         float ty = (float) (MathHelper.atan2(d.z, d.x) * 180.0 / Math.PI) - 90.0f;
         float tp = (float) -(MathHelper.atan2(d.y, Math.sqrt(d.x * d.x + d.z * d.z)) * 180.0 / Math.PI);
-        float dy = MathHelper.wrapDegrees(ty - p.getYaw());
-        float dp = tp - p.getPitch();
+        float dy = MathHelper.wrapDegrees(ty + ovYaw - p.getYaw());      // aim at target + current overshoot
+        float dp = tp + ovPitch - p.getPitch();
 
         float max = Config.I.turnSpeed * (0.6f + RNG.nextFloat() * 0.8f);
-        float sy = MathHelper.clamp(dy * 0.45f, -max, max);
-        float sp = MathHelper.clamp(dp * 0.45f, -max * 0.7f, max * 0.7f);
+        float sy = MathHelper.clamp(dy * aimGain, -max, max);
+        float sp = MathHelper.clamp(dp * aimGain, -max * 0.7f, max * 0.7f);
         p.setYaw(p.getYaw() + sy);
         p.setPitch(MathHelper.clamp(p.getPitch() + sp, -90f, 90f));
-        return Math.abs(dy) < 4f && Math.abs(dp) < 4f;
+
+        if (Math.abs(dy) < 10f) { ovYaw *= 0.75f; ovPitch *= 0.75f; }     // settle back onto the target
+
+        float ey = MathHelper.wrapDegrees(ty - p.getYaw());
+        float ep = tp - p.getPitch();
+        return Math.abs(ey) < 2.5f && Math.abs(ep) < 2.5f;
     }
 
     public static boolean hasItem(MinecraftClient mc, Item item) {

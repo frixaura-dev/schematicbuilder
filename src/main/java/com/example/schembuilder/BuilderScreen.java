@@ -116,7 +116,8 @@ public class BuilderScreen extends Screen {
         addDrawableChild(new IntSlider(lx, y, colW, bh, "Max delay", 1, 40, Config.I.maxDelay, v -> Config.I.maxDelay = v, v -> v + " ticks")); y += rh;
         addDrawableChild(new IntSlider(lx, y, colW, bh, "Turn speed", 3, 60, Config.I.turnSpeed, v -> Config.I.turnSpeed = v, v -> v + "°/tick")); y += rh;
         addDrawableChild(new IntSlider(lx, y, colW, bh, "Reach", 20, 60, Config.I.reachTenths, v -> Config.I.reachTenths = v, v -> (v / 10.0) + " blocks")); y += rh;
-        addDrawableChild(new IntSlider(lx, y, colW, bh, "Search radius", 8, 64, Config.I.searchRadius, v -> Config.I.searchRadius = v, v -> v + " blocks")); y += rh + 6;
+        addDrawableChild(new IntSlider(lx, y, colW, bh, "Search radius", 8, 64, Config.I.searchRadius, v -> Config.I.searchRadius = v, v -> v + " blocks")); y += rh;
+        addDrawableChild(new IntSlider(lx, y, colW, bh, "Human-ness", 0, 100, Config.I.humanLevel, v -> Config.I.humanLevel = v, v -> v == 0 ? "off" : v + "%")); y += rh + 6;
         addDrawableChild(ButtonWidget.builder(Text.literal("§cReset to defaults"), b -> {
             Config.I = new Config(); Config.save(); clearAndInit();
         }).dimensions(lx, y, colW, bh).build());
@@ -125,9 +126,13 @@ public class BuilderScreen extends Screen {
         addToggle(rx, y, colW, bh, "Auto-walk", Config.I.autoWalk, v -> Config.I.autoWalk = v); y += rh;
         addToggle(rx, y, colW, bh, "Crouch at edges", Config.I.edgeSneak, v -> Config.I.edgeSneak = v); y += rh;
         addToggle(rx, y, colW, bh, "Allow drops (<=3)", Config.I.allowDrops, v -> Config.I.allowDrops = v); y += rh;
-        addToggle(rx, y, colW, bh, "Layer by layer", Config.I.layerByLayer, v -> Config.I.layerByLayer = v); y += rh;
+        addDrawableChild(ButtonWidget.builder(layerText(), b -> {
+            Config.I.layerMode = (Layer.mode() + 1) % 4;
+            b.setMessage(layerText());
+        }).dimensions(rx, y, colW, bh).build()); y += rh;
         addToggle(rx, y, colW, bh, "Creative auto-give", Config.I.creativeFill, v -> Config.I.creativeFill = v); y += rh;
         addToggle(rx, y, colW, bh, "Line-of-sight check", Config.I.lineOfSight, v -> Config.I.lineOfSight = v); y += rh;
+        addToggle(rx, y, colW, bh, "Take short breaks", Config.I.takeBreaks, v -> Config.I.takeBreaks = v); y += rh;
         addToggle(rx, y, colW, bh, "Show HUD card", Config.I.showHud, v -> Config.I.showHud = v);
     }
 
@@ -141,6 +146,7 @@ public class BuilderScreen extends Screen {
     }
 
     private static Text toggleText(String n, boolean on) { return Text.literal(n + ": " + (on ? "§aON" : "§cOFF")); }
+    private static Text layerText() { return Text.literal("Layer: §e" + Layer.label()); }
     private static Text missingLabel() { return Text.literal("Only missing: " + (onlyMissing ? "§aON" : "§7OFF")); }
     private static Text startLabel() { return Text.literal(BuildEngine.running ? "§c■ Stop building" : "§a▶ Start building"); }
 
@@ -202,7 +208,7 @@ public class BuilderScreen extends Screen {
         if (!BuildEngine.running) return MUTED;
         return switch (BuildEngine.mode) {
             case "Walking", "Arriving" -> BLUE;
-            case "Waiting" -> YELLOW;
+            case "Waiting", "Pause", "Break" -> YELLOW;
             case "Idle" -> RED;
             default -> GREEN;
         };
@@ -233,7 +239,9 @@ public class BuilderScreen extends Screen {
         stat(ctx, x, y, w, "Time", fmtTime(ms)); y += 11;
         stat(ctx, x, y, w, "ETA", perMin > 0 && remaining > 0 ? fmtTime((long) (remaining / perMin * 60000)) : "--"); y += 11;
         stat(ctx, x, y, w, "Left", String.format(Locale.ROOT, "%,d", remaining)); y += 11;
-        stat(ctx, x, y, w, "Mode", BuildEngine.mode);
+        stat(ctx, x, y, w, "Mode", BuildEngine.mode); y += 11;
+        Integer ly = Layer.lockedY();
+        stat(ctx, x, y, w, "Layer", ly == null ? "all" : "y " + ly);
     }
 
     private void stat(DrawContext ctx, int x, int y, int w, String k, String v) {
@@ -288,9 +296,10 @@ public class BuilderScreen extends Screen {
 
             ctx.drawTextWithShadow(textRenderer, "WHAT IT DOES", x, y, MUTED); y += 11;
             for (String s : new String[]{
-                    "Walks to the next spot it can build from",
+                    "Builds the layer you stand on (Settings > Layer)",
+                    "Walks along it to the next spot in reach",
                     "Crouches when a 3+ block drop is nearby",
-                    "Places blocks in reach, bottom layer first"})
+                    "Carries on by itself when you move up a layer"})
                 y = wrapped(ctx, "• " + s, x, y, w, TEXT) + 1;
         }
         ctx.disableScissor();

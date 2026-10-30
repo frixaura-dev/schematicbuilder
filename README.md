@@ -17,6 +17,19 @@ Push to GitHub - the included workflow (`.github/workflows/build.yml`) compiles 
 3. Menu tabs: **Overview** (status, schematic info), **Materials** (search, only-missing filter, need/have),
    **Settings** (delays, reach, turn speed, search radius, walking and safety options).
 
+## Layer mode (Settings > Layer)
+* **Feet level** (default): builds the layer your feet are in - stand on the finished layer below and it fills
+  the next one, walking along it without stepping up or down.
+* **Floor you stand on**: builds the layer under your feet instead.
+* **Whole build, bottom-up / nearest**: ignores your level and works through the whole schematic.
+When a layer is finished it waits ("move up to the next layer") and carries on by itself when you change level.
+
+## Natural behaviour (Settings > Human-ness, Take short breaks)
+Uneven delays, short pauses, a rare longer break, small camera sway, slightly different aim speed per block,
+a short wait when switching blocks, wobble and the odd hesitation while walking, and clicks only where the
+crosshair really points. This makes it behave like a relaxed player; it does **not** make it undetectable and
+it is not a way around server rules.
+
 ## Walking and safety
 * Auto-walk: finds a route (A*) to a spot from which the next blocks are in reach, then presses
   forward/jump and turns the camera. It avoids lava, fire, cacti, berry bushes, cobwebs, magma and
