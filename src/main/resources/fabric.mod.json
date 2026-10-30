@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "schembuilder",
+  "version": "${version}",
+  "name": "Schematic Builder",
+  "description": "Automatically builds your placed Litematica schematic with human-like rotation and timing.",
+  "authors": ["You"],
+  "environment": "client",
+  "entrypoints": { "client": ["com.example.schembuilder.SchemBuilderClient"] },
+  "depends": {
+    "fabricloader": ">=0.18.0",
+    "minecraft": "1.21.11",
+    "java": ">=21",
+    "fabric-api": "*",
+    "litematica": "*"
+  }
+}
