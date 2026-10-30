@@ -23,38 +23,52 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
 
 /**
- * Places blocks like a player would: picks something in reach, smoothly turns
- * the camera toward a visible face, waits a randomised delay, then right-clicks.
+ * Places blocks like a player would: picks something in reach, smoothly turns the camera toward a
+ * visible face, waits a randomised delay, then right-clicks. When nothing is in reach it hands
+ * over to the Navigator, which walks to the next spot. Crouches at ledges.
  */
 public final class BuildEngine {
     private BuildEngine() {}
 
     public static boolean running = false;
     public static String status = "Idle";
+    /** Idle / Placing / Walking / Arriving / Waiting - shown in the UI. */
+    public static String mode = "Idle";
     public static int placedThisSession = 0;
+    private static long startMs = 0, accumMs = 0;
 
     private static final Random RNG = new Random();
 
-    private record Plan(BlockPos target, BlockPos neighbor, Direction side, Vec3d aim, BlockState want) {}
+    record Plan(BlockPos target, BlockPos neighbor, Direction side, Vec3d aim, BlockState want) {}
 
     private static Plan plan;
     private static int cooldown = 0;
+    /** How many times we tried to place at a position (gives up after a few so a server-rejected spot can't loop forever). */
+    private static final Map<Long, Integer> attempts = new HashMap<>();
 
     // ---------------------------------------------------------------- control
     public static void start() {
-        running = true; plan = null; cooldown = 0; status = "Building...";
+        running = true; plan = null; cooldown = 0; status = "Building..."; mode = "Starting";
+        placedThisSession = 0; accumMs = 0; startMs = System.currentTimeMillis();
+        attempts.clear();
+        Navigator.reset();
     }
 
     public static void stop(String why) {
-        running = false; plan = null; status = why;
+        if (running) accumMs += System.currentTimeMillis() - startMs;
+        running = false; plan = null; status = why; mode = "Idle";
+        Navigator.releaseAll(MinecraftClient.getInstance());
+        Navigator.reset();
     }
 
-    public static void toggle() {
-        if (running) stop("Stopped"); else start();
-    }
+    public static void toggle() { if (running) stop("Stopped"); else start(); }
+
+    public static long activeMs() { return accumMs + (running ? System.currentTimeMillis() - startMs : 0); }
 
     // ------------------------------------------------------------------- tick
     public static void tick(MinecraftClient mc) {
@@ -62,8 +76,16 @@ public final class BuildEngine {
         ClientPlayerEntity p = mc.player;
         ClientWorld w = mc.world;
         if (p == null || w == null || mc.interactionManager == null) { stop("Not in a world"); return; }
-        if (mc.currentScreen != null) return; // paused while a menu is open
-        if (LitematicaBridge.regions().isEmpty()) { status = LitematicaBridge.lastError != null ? LitematicaBridge.lastError : "No schematic placement found (load one in Litematica)"; return; }
+        if (!p.isAlive()) { stop("Stopped - you died"); return; }
+        if (mc.currentScreen != null) { Navigator.releaseAll(mc); return; } // paused while a menu is open
+
+        Navigator.beginTick();
+        if (LitematicaBridge.regions().isEmpty()) {
+            Navigator.releaseAll(mc);
+            mode = "Idle";
+            status = LitematicaBridge.lastError != null ? LitematicaBridge.lastError : "No schematic placement found (load one in Litematica)";
+            return;
+        }
 
         // Re-validate current plan.
         if (plan != null) {
@@ -74,9 +96,14 @@ public final class BuildEngine {
 
         if (plan == null) {
             plan = findPlan(mc);
-            if (plan == null) return; // status already set by findPlan
-            if (cooldown < 2) cooldown = 2 + RNG.nextInt(3); // "reaction time" when picking a new spot
+            if (plan == null) { Navigator.walkTick(mc); return; } // nothing in reach -> walk somewhere useful
+            Navigator.onPlanFound(mc);
+            if (cooldown < 2) cooldown = 2 + RNG.nextInt(3);      // "reaction time" on a new spot
         }
+
+        mode = "Placing";
+        // Crouch if a slip would drop us off the build.
+        Navigator.holdSneak(mc, Config.I.edgeSneak && Navigator.isNearEdge(mc));
 
         boolean aligned = turnToward(p, plan.aim);
         if (!aligned) { status = "Aiming..."; return; }
@@ -87,6 +114,7 @@ public final class BuildEngine {
 
         BlockHitResult hit = new BlockHitResult(plan.aim, plan.side, plan.neighbor, false);
         ActionResult r = mc.interactionManager.interactBlock(p, Hand.MAIN_HAND, hit);
+        attempts.merge(plan.target.asLong(), 1, Integer::sum);
         if (r.isAccepted()) {
             p.swingHand(Hand.MAIN_HAND);
             placedThisSession++;
@@ -99,6 +127,7 @@ public final class BuildEngine {
     }
 
     // --------------------------------------------------------------- planning
+    /** Best block to place from where the player stands right now, or null. */
     private static Plan findPlan(MinecraftClient mc) {
         ClientPlayerEntity p = mc.player;
         ClientWorld w = mc.world;
@@ -109,50 +138,56 @@ public final class BuildEngine {
 
         Plan best = null;
         double bestScore = Double.MAX_VALUE;
-        boolean anyRemainingOutOfReach = false;
-        String missingItem = null;
 
         for (LitematicaBridge.Region reg : LitematicaBridge.regions()) {
-            // Remaining anywhere? (cheap pre-check only used for the status text)
             int x0 = Math.max(reg.minX(), pp.getX() - r), x1 = Math.min(reg.maxX(), pp.getX() + r);
             int y0 = Math.max(reg.minY(), pp.getY() - r), y1 = Math.min(reg.maxY(), pp.getY() + r);
             int z0 = Math.max(reg.minZ(), pp.getZ() - r), z1 = Math.min(reg.maxZ(), pp.getZ() + r);
+            BlockPos.Mutable m = new BlockPos.Mutable();
 
             for (int x = x0; x <= x1; x++)
                 for (int y = y0; y <= y1; y++)
                     for (int z = z0; z <= z1; z++) {
-                        BlockPos pos = new BlockPos(x, y, z);
-                        BlockState want = LitematicaBridge.wanted(pos);
-                        if (want.isAir() || !want.getFluidState().isEmpty()) continue;
-                        if (want.getBlock().asItem() == Items.AIR) continue;
-                        if (isSecondHalf(want)) continue;
-
-                        BlockState have = w.getBlockState(pos);
-                        if (!have.isReplaceable()) continue;          // already built (or wrong block - we never break)
-                        if (have.getBlock() == want.getBlock()) continue;
-
-                        Item item = want.getBlock().asItem();
-                        if (!hasItem(mc, item)) { if (missingItem == null) missingItem = item.getName().getString(); continue; }
+                        m.set(x, y, z);
+                        if (!w.getBlockState(m).isReplaceable()) continue;      // cheap test first
+                        BlockState want = LitematicaBridge.wanted(m);
+                        if (!isCandidate(w, m, want)) continue;
+                        if (attempts.getOrDefault(m.asLong(), 0) >= 4) continue;
+                        if (!hasItem(mc, want.getBlock().asItem())) continue;
+                        BlockPos pos = m.toImmutable();
                         if (!w.canPlace(want, pos, ShapeContext.of(p))) continue; // entity in the way
 
-                        Plan pl = planFor(mc, pos, want, eye);
+                        Plan pl = planFor(mc, pos, want, eye, reach);
                         if (pl == null) continue;
-                        double d = eye.squaredDistanceTo(pl.aim);
-                        double score = (Config.I.layerByLayer ? y * 10000.0 : 0) + d;
+                        double score = (Config.I.layerByLayer ? y * 10000.0 : 0) + eye.squaredDistanceTo(pl.aim);
                         if (score < bestScore) { bestScore = score; best = pl; }
                     }
-        }
-
-        if (best == null) {
-            if (missingItem != null) status = "Missing: " + missingItem;
-            else status = "Nothing left in reach - move along the build";
         }
         return best;
     }
 
-    private static Plan planFor(MinecraftClient mc, BlockPos pos, BlockState want, Vec3d eye) {
+    /** True if the schematic wants `want` at pos and the world still has a replaceable block there. */
+    static boolean isCandidate(ClientWorld w, BlockPos pos, BlockState want) {
+        if (want.isAir() || !want.getFluidState().isEmpty()) return false;
+        if (want.getBlock().asItem() == Items.AIR) return false;
+        if (isSecondHalf(want)) return false;
+        BlockState have = w.getBlockState(pos);
+        if (!have.isReplaceable()) return false;      // already built (or wrong block - we never break)
+        return have.getBlock() != want.getBlock();
+    }
+
+    /** Is there at least one solid neighbour we could click against? */
+    static boolean hasSupport(ClientWorld w, BlockPos pos) {
+        for (Direction d : Direction.values()) {
+            BlockState ns = w.getBlockState(pos.offset(d));
+            if (!ns.isReplaceable() && ns.getFluidState().isEmpty() && !isInteractable(ns)) return true;
+        }
+        return false;
+    }
+
+    /** Choose a face to click for `pos`, as seen from a (possibly hypothetical) eye position. */
+    static Plan planFor(MinecraftClient mc, BlockPos pos, BlockState want, Vec3d eye, double reach) {
         ClientWorld w = mc.world;
-        double reach = Config.I.reach();
         Plan best = null;
         double bestDist = Double.MAX_VALUE;
         Boolean top = wantsTop(want);
@@ -202,7 +237,7 @@ public final class BuildEngine {
         return null;
     }
 
-    private static boolean isInteractable(BlockState s) {
+    static boolean isInteractable(BlockState s) {
         Block b = s.getBlock();
         return b instanceof BlockEntityProvider || b instanceof DoorBlock || b instanceof TrapdoorBlock
                 || b instanceof ButtonBlock || b instanceof LeverBlock || b instanceof FenceGateBlock

@@ -23,8 +23,19 @@ public final class MaterialScanner {
     public static int totalBlocks = 0;
     public static int builtBlocks = 0;
 
+    public static long lastScanMs = 0;
+
+    /** Number of block positions a scan has to look at. */
+    public static long volume() {
+        long v = 0;
+        for (LitematicaBridge.Region r : LitematicaBridge.regions())
+            v += (long) (r.maxX() - r.minX() + 1) * (r.maxY() - r.minY() + 1) * (r.maxZ() - r.minZ() + 1);
+        return v;
+    }
+
     public static void scan() {
         MinecraftClient mc = MinecraftClient.getInstance();
+        lastScanMs = System.currentTimeMillis();
         if (mc.world == null) return;
         Map<Item, Entry> map = new HashMap<>();
         int total = 0, built = 0;

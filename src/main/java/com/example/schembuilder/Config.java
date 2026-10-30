@@ -17,6 +17,11 @@ public class Config {
     public boolean layerByLayer = true;
     public boolean creativeFill = true;
     public boolean lineOfSight = true;
+    public boolean autoWalk = true;       // walk around the schematic by itself
+    public boolean edgeSneak = true;      // crouch while placing near a drop
+    public boolean allowDrops = false;    // path may step down up to 3 blocks
+    public boolean showHud = true;        // small status card while building
+    public int searchRadius = 32;         // how far to look for the next block to build
 
     public double reach() { return reachTenths / 10.0; }
 
