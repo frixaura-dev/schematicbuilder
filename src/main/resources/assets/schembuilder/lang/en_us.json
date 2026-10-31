@@ -1,6 +1,6 @@
 {
-  "key.category.schembuilder.main": "Schematic Builder",
-  "key.schembuilder.gui": "Open Builder Menu",
-  "key.schembuilder.toggle": "Start / Stop Building",
-  "key.schembuilder.panic": "Emergency Stop"
+  "category.schembuilder": "SchemBuilder",
+  "key.schembuilder.open": "Open SchemBuilder",
+  "key.schembuilder.pause": "Pause / resume build",
+  "key.schembuilder.stop": "Stop build"
 }
